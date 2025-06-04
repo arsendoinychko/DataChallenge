@@ -1,10 +1,3 @@
-
-
-
-
-
-
-
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,6 +5,9 @@ from scipy.signal import find_peaks
 import matplotlib.widgets as widgets
 from collections import defaultdict
 import argparse
+import csv
+from datetime import datetime
+import os
 
 # Parse command line arguments
 def parse_arguments():
@@ -39,7 +35,91 @@ prev_temporal_noisy_peaks = set()
 prev_temporal_fragmented_peaks = set()
 
 
-
+# Add this function to export the peak data to CSV
+def export_to_csv(
+    stable_noisy_peaks,
+    blinking_noisy_peaks,
+    blinking_fragmented_peaks,
+    stable_fragmented_peaks
+):
+    # Create a directory for exports if it doesn't exist
+    export_dir = "peak_exports"
+    os.makedirs(export_dir, exist_ok=True)
+    
+    # Generate timestamp for the filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(export_dir, f"peak_data_{timestamp}.csv")
+    
+    
+    # Prepare data for export
+    export_data = []
+    
+    # Helper function to process each peak
+    def add_peak_data(peak, peak_type):
+        intensity_values = noise_avg_col.get(peak, [])
+        avg_intensity = np.mean(intensity_values) if intensity_values else 0
+        max_intensity = max(intensity_values) if intensity_values else 0
+        min_intensity = min(intensity_values) if intensity_values else 0
+        std_intensity = np.std(intensity_values) if len(intensity_values) > 1 else 0
+        
+        export_data.append({
+            'Position': peak,
+            'Type': peak_type,
+            'Average_Intensity': avg_intensity,
+            'Max_Intensity': max_intensity,
+            'Min_Intensity': min_intensity,
+            'Std_Intensity': std_intensity,
+            'Occurrence_Count': len(intensity_values)
+        })
+    
+    # Add all peak types to the export data
+    for peak in stable_noisy_peaks:
+        add_peak_data(peak, 'Stable_Noisy')
+    
+    for peak in blinking_noisy_peaks:
+        add_peak_data(peak, 'Blinking_Noisy')
+    
+    for peak in blinking_fragmented_peaks:
+        add_peak_data(peak, 'Blinking_Fragmented')
+    
+    for peak in stable_fragmented_peaks:
+        add_peak_data(peak, 'Stable_Fragmented')
+    
+    # Write to CSV
+    if export_data:
+        with open(filename, 'w', newline='') as csvfile:
+            fieldnames = ['Position', 'Type', 'Average_Intensity', 'Max_Intensity', 
+                         'Min_Intensity', 'Std_Intensity', 'Occurrence_Count']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            
+            # Write header and file info
+            writer.writeheader()
+            
+            # Write all the peak data
+            for row in export_data:
+                writer.writerow(row)
+            
+        print(f"Peak data exported to {filename}")
+        
+        # Also export additional information file
+        info_filename = os.path.join(export_dir, f"peak_data_info_{timestamp}.txt")
+        with open(info_filename, 'w') as info_file:
+            info_file.write(f"Source file: {file_path}\n")
+            info_file.write(f"Export date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            info_file.write(f"Number of slices: {n_splits}\n")
+            info_file.write(f"Threshold value: {const}\n")
+            info_file.write(f"Vmax percentile: {percentage_of_vmax}\n")
+            info_file.write(f"Vmin percentile: {percentage_of_vmin}\n")
+            valleys_status = 'Enabled' if checkbox_valleys.get_status()[0] else 'Disabled'
+            info_file.write(f"Valleys detection: {valleys_status}\n")
+            info_file.write(f"Total frames processed: {max_frame - 1}\n")
+            info_file.write(f"Total peaks found: {len(export_data)}\n")
+            info_file.write(f"Stable noisy peaks: {len(stable_noisy_peaks)}\n")
+            info_file.write(f"Blinking noisy peaks: {len(blinking_noisy_peaks)}\n")
+            info_file.write(f"Stable fragmented peaks: {len(stable_fragmented_peaks)}\n")
+            info_file.write(f"Blinking fragmented peaks: {len(blinking_fragmented_peaks)}\n")
+    else:
+        print("No peak data to export")
 # Function to process peaks for a given frame
 
 # Find max peaks
@@ -145,6 +225,7 @@ def update(val):
             vmin = np.percentile(frame_data, percentage_of_vmin)  # Set vmin to 1st percentile
             vmax = np.percentile(frame_data, percentage_of_vmax)
             frame_clipped = np.clip(frame_data, vmin, vmax)
+            # frame_clipped = frame_data.copy()  # Use a copy to avoid modifying the original data
             frame_width = frame_clipped.shape[1]
             
             # Process peaks for this frame
@@ -167,13 +248,13 @@ def update(val):
             # Plot noisy peaks (top right)
             if frame_idx < max_frame - 1:
                 if temporal_noisy_peaks:
-                    for peak in temporal_noisy_peaks:
+                    for i, peak in enumerate(temporal_noisy_peaks):
                         ax2.axvline(x=peak, color='red', linestyle='-', linewidth=1, label='Noisy Peaks')
                         y_value = np.mean(metric_col[peak]) if peak in metric_col else 0  # Ensure y_value is non-negative
                         noise_avg_col[peak].append(y_value)  # Store average for noisy peaks
+                        ax3.vlines(x=peak, ymin=0, ymax=y_value, color='red', linestyle='-', linewidth=1, label="Noisy Peaks" if peak == min(temporal_noisy_peaks, default=None) else "")
                         ax3.vlines(x=peak, ymin=0, ymax=y_value, color='red', linestyle='-', linewidth=1, label='Noisy Peaks')
                         ax3.text(peak, y_value, f'{y_value:.1f}', fontsize=8, ha='center', va='bottom', color='red')
-                    # ax2.legend()
                     ax3.legend()
                 ax3.set_title("Noisy Peaks")
                 ax3.set_ylim( 0 , 20)
@@ -182,27 +263,28 @@ def update(val):
                 
                 # Plot fragmented peaks (bottom right)
                 if temporal_fragmented_peaks:
-                    for peak in temporal_fragmented_peaks:
+                    for i, peak in enumerate(temporal_fragmented_peaks):
                         ax2.axvline(x=peak, color='blue', linestyle='--', linewidth=1, label='Fragmented Peaks')
                         y_value = np.mean(metric_col[peak]) if peak in metric_col else 0  # Ensure y_value is non-negative
                         noise_avg_col[peak].append(y_value)
-                        ax4.vlines(x=peak, ymin=0, ymax=y_value, color='blue', linestyle='-', linewidth=1, label='Fragmented Peaks')
+                        ax4.vlines(x=peak, ymin=0, ymax=y_value, color='blue', linestyle='-', linewidth=1, label='Fragmented Peaks' if peak == min(temporal_fragmented_peaks, default=None) else "")
                         ax4.text(peak, y_value, f'{y_value:.1f}', fontsize=8, ha='center', va='bottom', color='blue')
                     ax4.legend()
-                    # ax2.legend()
                 ax4.set_title("Fragmented Peaks")
                 ax4.set_ylim( 0 , 20)
                 ax4.set_xlim(0, frame_clipped.shape[1])
                 ax4.grid(True)
+ 
             
             # Draw lines on the bottom left plot only if we've reached the last frame
             if frame_idx == max_frame - 1:
-                draw_lines(ax2, ax3, ax4)
-                # Clear global variables for the next run
-                noisy_peaks.clear()
-                fragmented_peaks.clear()
-                __all_union_of_peaks_of_every_frame.clear()
-                noise_avg_col.clear()
+                if __all_union_of_peaks_of_every_frame:
+                    draw_lines(ax2, ax3, ax4)
+                    # Clear global variables for the next run
+                    noisy_peaks.clear()
+                    fragmented_peaks.clear()
+                    __all_union_of_peaks_of_every_frame.clear()
+                    noise_avg_col.clear()
             
             previous_frame_idx = frame_idx     
             fig.canvas.draw_idle()
@@ -221,6 +303,9 @@ def draw_lines(ax_main, ax_noise, ax_fragmented):
     # for ax in [ax_main, ax_noise, ax_fragmented]:
     #     for artist in ax.lines + ax.texts:
     #         artist.remove()
+
+    # Export peak data to CSV
+    export_to_csv(stable_noisy_peaks, blinking_noisy_peaks, blinking_fragmented_peaks, stable_fragmented_peaks)
 
 
     max_stable_noisy = get_max_peak(stable_noisy_peaks)
@@ -343,6 +428,7 @@ textbox_vmax = widgets.TextBox(ax_vmin, 'Vmax (%)', initial=str(percentage_of_vm
 # Tick box for peaks or valleys
 ax_valleys = plt.axes([0.05, 0.01, 0.1, 0.03])
 checkbox_valleys = widgets.CheckButtons(ax_valleys, ['Show Valleys'], [False])
+
 
 
 # Connect the slider to the update function
