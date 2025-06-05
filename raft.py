@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RAFT – Rapid Analysis of Faulty columns in image sTacks
+RAFT – Rapid Analysis of Faulty columns in infrared image sTacks
 =======================================================
 One-window Tkinter GUI with
 
@@ -44,8 +44,8 @@ def detect_peaks(img: np.ndarray, *, n_splits: int, const: float,
         sl = img[r0:r1]
         col_m = sl.mean(axis=0)
         mu, sd = np.mean(col_m), np.std(col_m)
-        pk, _ = find_peaks(col_m,          height=mu + const*sd)
-        vl, _ = find_peaks(-col_m, height=const*sd - mu) if include_valleys else ([], {})
+        pk, _ = find_peaks(col_m,          height=mu + const*sd, distance=20)
+        vl, _ = find_peaks(-col_m, height=const*sd - mu, distance=20) if include_valleys else ([], {})
         per_slice.append(set(pk) | set(vl))
 
     union = set.union(*per_slice) if per_slice else set()
@@ -262,35 +262,29 @@ class RAFTApp(tk.Tk):
         chk_val = CheckButtons(ax_chk, ["Show Valleys"], [False])
 
         # ---- Cached frame-stack analysis --------------------------------
-        def _sig(n_s, c, vmin, vmax, val):
-            return (int(n_s), round(c, 4), round(vmin, 3),
-                    round(vmax, 3), val)
+        def _sig(f_idx, n_s, c, vmin, vmax, val):
+            """Unique key for lru_cache – note the first argument is *frame index*."""
+            return (f_idx, int(n_s), round(c, 3), round(vmin, 3),
+                    round(vmax, 3), bool(val))
 
-        @lru_cache(maxsize=8)
+        @lru_cache(maxsize=256)               # many frames, small memory footprint
         def _analyse(sig):
-            n_s, const, pvmin, pvmax, valleys = sig
-            union_pf, nonfrag_pf, frag_pf, metric_pf = [], [], [], []
-            noise_avg_col = defaultdict(list)
-            for fname in all_frames:
-                with h5py.File(file_path, "r") as f:
-                    img = f[fname][:]
-                img = np.clip(img, *np.percentile(img, [pvmin, pvmax]))
-                nfr, frg, met = _process(img, n_s, const, valleys,
-                                         noise_avg_col)
-                nonfrag_pf.append(nfr)
-                frag_pf.append(frg)
-                union_pf.append(nfr | frg)
-                metric_pf.append(met)
-            stable = set.intersection(*union_pf)
-            blink = set.union(*union_pf) - stable
-            return dict(
-                union_pf=union_pf, nonfrag_pf=nonfrag_pf, frag_pf=frag_pf,
-                metric_pf=metric_pf, noise_avg_col=noise_avg_col,
-                Continuous_NF   = stable & set.union(*nonfrag_pf),
-                Blinking_NF     = blink  & set.union(*nonfrag_pf),
-                Continuous_Frag = stable & set.union(*frag_pf),
-                Blinking_Frag   = blink  & set.union(*frag_pf),
-            )
+            f_idx, n_s, const, pvmin, pvmax, valleys = sig
+
+            fname = all_frames[f_idx]         # ← just one frame!
+            with h5py.File(file_path, "r") as f:
+                img = f[fname][:]
+
+            # contrast-stretch only once, for this frame
+            img = np.clip(img, *np.percentile(img, [pvmin, pvmax]))
+
+            noise_tmp = defaultdict(list)     # local accumulator
+            nonf, frag, met = _process(img, n_s, const, valleys, noise_tmp)
+
+            return dict(img=img,
+                        nonfrag=nonf,
+                        frag=frag,
+                        metric=met)
 
         def _process(img, n_s, const, valleys, nav):
             H, W = img.shape
@@ -302,8 +296,8 @@ class RAFTApp(tk.Tk):
                 col_m = sl.mean(axis=0)
                 mu, sd = np.mean(col_m), np.std(col_m)
                 th_p, th_v = mu + const*sd, const*sd - mu
-                pk, pprop = find_peaks(col_m,          height=th_p)
-                vl, vprop = find_peaks(-col_m, height=th_v) if valleys else ([], {})
+                pk, pprop = find_peaks(col_m,          height=th_p, distance=20)
+                vl, vprop = find_peaks(-col_m, height=th_v, distance=20) if valleys else ([], {})
                 both = np.concatenate([pk, vl]) if valleys else pk
                 all_sets.append(set(both))
                 for j, p in enumerate(pk):
@@ -357,21 +351,15 @@ class RAFTApp(tk.Tk):
         # ---- update callback --------------------------------------------
         prev_sig, ana = None, None
         def _update(_=None):
-            nonlocal prev_sig, ana
-            sig = _sig(s_split.val, s_const.val,
-                       float(t_vmin.text), float(t_vmax.text),
-                       chk_val.get_status()[0])
-            if sig != prev_sig:
-                ana = _analyse(sig)
-                prev_sig = sig
-
             idx = int(s_frame.val)
-            fname = all_frames[idx]
-            with h5py.File(file_path, "r") as f:
-                img = f[fname][:]
-            vmin, vmax = np.percentile(img,
-                                       [float(t_vmin.text),
-                                        float(t_vmax.text)])
+            sig = _sig(idx, s_split.val, s_const.val,
+                    float(t_vmin.text), float(t_vmax.text),
+                    chk_val.get_status()[0])
+
+            ana = _analyse(sig)               # ← returns SINGLE-frame dict
+
+            img       = ana["img"]
+            vmin, vmax = img.min(), img.max() # already clipped – quick limits
             img = np.clip(img, vmin, vmax)
 
             for a in (ax1, ax2, ax3, ax4):
@@ -382,9 +370,9 @@ class RAFTApp(tk.Tk):
             ax2.imshow(img, cmap="gray", vmin=vmin, vmax=vmax)
             ax2.set_title("Labeled");   ax2.axis("off")
 
-            nf_now = ana["nonfrag_pf"][idx]
-            fr_now = ana["frag_pf"][idx]
-            met_now = ana["metric_pf"][idx]
+            nf_now  = ana["nonfrag"]
+            fr_now  = ana["frag"]
+            met_now = ana["metric"]
             W = img.shape[1]
 
             for p in nf_now:
