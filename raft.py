@@ -190,29 +190,54 @@ def detect_peaks(img:np.ndarray, *, n_splits:int, const:float,
 
 def analyse_stack(path:pathlib.Path, *, const:float, vmin:float, vmax:float,
                   splits:int, valleys:bool)->Dict:
+   
     frame_names, nonfrag_pf, frag_pf, union_pf = [], [], [], []
     with h5py.File(path,"r") as f:
+        # Sort frames numerically to ensure correct temporal order
         for fname in sorted(f, key=lambda x:int(x.split()[-1])):
             frame_names.append(fname)
             img = f[fname][:]
+            
+            # Clip image intensity to the specified percentile range to improve contrast
             img = np.clip(img, *np.percentile(img,[vmin, vmax]))
+            
+            # Detect peaks for the current frame
             nonf, frag = detect_peaks(img, n_splits=splits,
                                       const=const, include_valleys=valleys)
-            nonfrag_pf.append(nonf); frag_pf.append(frag); union_pf.append(nonf|frag)
-    stable   = set.intersection(*union_pf)
-    blinking = set.union(*union_pf) - stable
-    union_nf = set.union(*nonfrag_pf)
-    union_frag = set.union(*frag_pf)
+            
+            # Store results for the current frame
+            nonfrag_pf.append(nonf)
+            frag_pf.append(frag)
+            union_pf.append(nonf|frag)
 
+    # Aggregate results across all frames
+    stable     = set.intersection(*union_pf) if union_pf else set()
+    blinking = set.union(*union_pf) - stable if union_pf else set()
+    union_nf = set.union(*nonfrag_pf) if nonfrag_pf else set()
+    union_frag = set.union(*frag_pf) if frag_pf else set()
+
+    # ========================== CORRECTED SECTION ==========================
+    # This section now correctly populates the 'noisy_frames' dictionary.
+    # It iterates through 'union_pf', which contains ALL noisy columns
+    # (both non-fragmented and fragmented) for each frame. This ensures
+    # the final CSV report will list the corresponding frames for every
+    # identified noisy column, regardless of its category.
+    #
     noisy_frames = defaultdict(list)
-    for fn, nonf in zip(frame_names, nonfrag_pf):
-        for c in nonf:
+    for fn, all_noisy_in_frame in zip(frame_names, union_pf):
+        for c in all_noisy_in_frame:
             noisy_frames[c].append(fn)
+    # ======================== END OF CORRECTED SECTION =======================
 
+    # Return a dictionary with all the analysis results
     return dict(frame_names=frame_names,
-                nonfrag_pf=nonfrag_pf, frag_pf=frag_pf, union_pf=union_pf,
-                stable=stable, blinking=blinking,
-                union_nf=union_nf, union_frag=union_frag,
+                nonfrag_pf=nonfrag_pf, 
+                frag_pf=frag_pf, 
+                union_pf=union_pf,
+                stable=stable, 
+                blinking=blinking,
+                union_nf=union_nf, 
+                union_frag=union_frag,
                 noisy_frames=noisy_frames)
 
 
