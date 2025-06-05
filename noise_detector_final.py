@@ -33,7 +33,7 @@ noise_avg_col = defaultdict(list)
 previous_frame_idx = -1
 prev_temporal_noisy_peaks = set() 
 prev_temporal_fragmented_peaks = set()
-
+distance = 10
 
 # Add this function to export the peak data to CSV
 def export_to_csv(
@@ -152,10 +152,10 @@ def process_frame_peaks(frame_data, checkbox_valleys_state):
         # prominence_threshold = const * std_intensity
 
         # Detect peaks (positive peaks)
-        peaks, peak_properties = find_peaks(column_averages, height=height_threshold_peaks)
+        peaks, peak_properties = find_peaks(column_averages, height=height_threshold_peaks, distance=distance, prominence=const * std_intensity)  # Find peaks in the column averages
         # Detect valleys (negative peaks)
         if checkbox_valleys_state:
-            valleys, valley_properties = find_peaks(-column_averages, height = height_threshold_valley)
+            valleys, valley_properties = find_peaks(-column_averages, height = height_threshold_valley, distance=distance, prominence = const * std_intensity)  # Find valleys by inverting the signal
             all_peaks_of_frame.append(set(np.concatenate([peaks, valleys])))  # Store peaks and valleys as a set
             # print(f"Split {i+1}: Found {len(peaks)} peaks and {len(valleys) if checkbox_valleys_state else 0} valleys")
             # Store metrics for each peak
